@@ -52,9 +52,9 @@ typedef enum {
 	COND_TYPE_INVALID = 0,
 	COND_TYPE_TRUE,
 	COND_TYPE_FALSE,
-	COND_TYPE_TMPL,
+	COND_TYPE_UNARY,
 	COND_TYPE_RCODE,
-	COND_TYPE_MAP,
+	COND_TYPE_BINARY,
 	COND_TYPE_AND,
 	COND_TYPE_OR,
 	COND_TYPE_CHILD
@@ -66,6 +66,18 @@ typedef enum {
 	PASS2_FIXUP_TYPE,
 	PASS2_PAIRCOMPARE
 } fr_cond_pass2_t;
+
+typedef struct {
+	tmpl_t			*lhs;		//!< Typically describes the attribute to add, modify or compare.
+	tmpl_t			*rhs;   	//!< Typically describes a literal value or a src attribute
+						///< to copy or compare.
+
+	fr_token_t		op; 		//!< The operator that controls insertion of the dst attribute.
+	fr_type_t		cast;		//!< Cast value to this type.
+
+	CONF_ITEM		*ci;		//!< Config item that the map was created from. Mainly used for
+						//!< logging validation errors.
+} fr_cond_opands_t;
 
 /*
  *	Allow for the following structures:
@@ -83,12 +95,12 @@ struct fr_cond_s {
 						///< is derived from.
 
 	union {
-		map_t		*map;		//!< Binary expression.
-		tmpl_t			*vpt;		//!< Unary expression.
+		fr_cond_opands_t	*binary;	//!< Binary expression.
+		tmpl_t			*unary;		//!< Unary expression.
 		fr_cond_t  		*child;		//!< Nested condition.
 		rlm_rcode_t		rcode;		//!< Rcode check.   We handle this outside of
 							///< tmpls as it doesn't apply anywhere else.
-	} data;
+	} opand;
 
 	bool			negate;		//!< Invert the result of the expression.
 	fr_cond_pass2_t		pass2_fixup;
@@ -103,8 +115,6 @@ ssize_t	fr_cond_tokenize(CONF_SECTION *cs, fr_cond_t **head, tmpl_rules_t const 
 ssize_t	cond_print(fr_sbuff_t *out, fr_cond_t const *c);
 
 bool fr_cond_walk(fr_cond_t *head, bool (*callback)(fr_cond_t *cond, void *uctx), void *uctx);
-
-int fr_cond_from_map(TALLOC_CTX *ctx, fr_cond_t **head, map_t *map);
 
 #ifdef __cplusplus
 }

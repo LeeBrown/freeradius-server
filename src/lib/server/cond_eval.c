@@ -45,10 +45,10 @@ RCSID("$Id$")
  */
 static fr_table_num_sorted_t const cond_type_table[] = {
 	{ L("child"),		COND_TYPE_CHILD		},
-	{ L("tmpl"),		COND_TYPE_TMPL		},
+	{ L("unary"),		COND_TYPE_UNARY		},
 	{ L("false"),		COND_TYPE_FALSE		},
 	{ L("invalid"),		COND_TYPE_INVALID	},
-	{ L("map"),		COND_TYPE_MAP		},
+	{ L("binary"),		COND_TYPE_BINARY	},
 	{ L("true"),		COND_TYPE_TRUE		},
 };
 static size_t cond_type_table_len = NUM_ELEMENTS(cond_type_table);
@@ -91,26 +91,26 @@ void cond_debug(fr_cond_t const *cond)
 		INFO("\tfixup  : %s", fr_table_str_by_value(cond_pass2_table, c->pass2_fixup, "<INVALID>"));
 
 		switch (c->type) {
-		case COND_TYPE_MAP:
+		case COND_TYPE_BINARY:
 			INFO("lhs (");
-			tmpl_debug(c->data.map->lhs);
+			tmpl_debug(c->opand.binary->lhs);
 			INFO(")");
 			INFO("rhs (");
-			tmpl_debug(c->data.map->rhs);
+			tmpl_debug(c->opand.binary->rhs);
 			INFO(")");
 			break;
 
 		case COND_TYPE_RCODE:
-			INFO("\trcode  : %s", fr_table_str_by_value(rcode_table, c->data.rcode, ""));
+			INFO("\trcode  : %s", fr_table_str_by_value(rcode_table, c->opand.rcode, ""));
 			break;
 
-		case COND_TYPE_TMPL:
-			tmpl_debug(c->data.vpt);
+		case COND_TYPE_UNARY:
+			tmpl_debug(c->opand.unary);
 			break;
 
 		case COND_TYPE_CHILD:
 			INFO("child (");
-			cond_debug(c->data.child);
+			cond_debug(c->opand.child);
 			INFO(")");
 			break;
 
@@ -131,7 +131,7 @@ void cond_debug(fr_cond_t const *cond)
  *	- 0 for "no match" or failure
  *	- 1 for "match".
  */
-int cond_eval_tmpl(request_t *request, UNUSED int depth, tmpl_t const *vpt)
+int cond_eval_unary(request_t *request, UNUSED int depth, tmpl_t const *vpt)
 {
 	switch (vpt->type) {
 	case TMPL_TYPE_ATTR:
@@ -193,30 +193,30 @@ static int cond_do_regex(request_t *request, fr_cond_t const *c,
 		         fr_value_box_t const *lhs,
 		         fr_value_box_t const *rhs)
 {
-	map_t const *map = c->data.map;
+	fr_cond_opands_t const *opands = c->opand.binary;
 
-	ssize_t		slen;
-	uint32_t	subcaptures;
-	int		ret;
+	ssize_t			slen;
+	uint32_t		subcaptures;
+	int			ret;
 
-	regex_t		*preg, *rreg = NULL;
-	fr_regmatch_t	*regmatch;
+	regex_t			*preg, *rreg = NULL;
+	fr_regmatch_t		*regmatch;
 
 	if (!fr_cond_assert(lhs != NULL)) return -1;
 	if (!fr_cond_assert(lhs->type == FR_TYPE_STRING)) return -1;
 
 	EVAL_DEBUG("CMP WITH REGEX");
 
-	switch (map->rhs->type) {
+	switch (opands->rhs->type) {
 	case TMPL_TYPE_REGEX: /* pre-compiled to a regex */
-		preg = tmpl_regex(map->rhs);
+		preg = tmpl_regex(opands->rhs);
 		break;
 
 	default:
 		if (!fr_cond_assert(rhs && rhs->type == FR_TYPE_STRING)) return -1;
 		if (!fr_cond_assert(rhs && rhs->vb_strvalue)) return -1;
 		slen = regex_compile(request, &rreg, rhs->vb_strvalue, rhs->vb_length,
-				     tmpl_regex_flags(map->rhs), true, true);
+				     tmpl_regex_flags(opands->rhs), true, true);
 		if (slen <= 0) {
 			REMARKER(rhs->vb_strvalue, -slen, "%s", fr_strerror());
 			EVAL_DEBUG("FAIL %d", __LINE__);
@@ -299,7 +299,7 @@ static void cond_print_operands(fr_value_box_t const *lhs, fr_value_box_t const 
  */
 static int cond_cmp_values(request_t *request, fr_cond_t const *c, fr_value_box_t const *lhs, fr_value_box_t const *rhs)
 {
-	map_t const *map = c->data.map;
+	fr_cond_opands_t const *opands = c->opand.binary;
 	int rcode;
 
 #ifdef WITH_EVAL_DEBUG
@@ -311,7 +311,7 @@ static int cond_cmp_values(request_t *request, fr_cond_t const *c, fr_value_box_
 	/*
 	 *	Regex comparison
 	 */
-	if (map->op == T_OP_REG_EQ) {
+	if (opands->op == T_OP_REG_EQ) {
 		rcode = cond_do_regex(request, c, lhs, rhs);
 		goto finish;
 	}
@@ -325,10 +325,10 @@ static int cond_cmp_values(request_t *request, fr_cond_t const *c, fr_value_box_
 
 		fr_pair_list_init(&vps);
 		EVAL_DEBUG("CMP WITH PAIRCOMPARE");
-		fr_assert(tmpl_is_attr(map->lhs));
+		fr_assert(tmpl_is_attr(opands->lhs));
 
-		MEM(vp = fr_pair_afrom_da(request, tmpl_da(map->lhs)));
-		vp->op = c->data.map->op;
+		MEM(vp = fr_pair_afrom_da(request, tmpl_da(opands->lhs)));
+		vp->op = c->opand.binary->op;
 
 		fr_value_box_copy(vp, &vp->data, rhs);
 
@@ -340,7 +340,7 @@ static int cond_cmp_values(request_t *request, fr_cond_t const *c, fr_value_box_
 	}
 
 	EVAL_DEBUG("CMP WITH VALUE DATA");
-	rcode = fr_value_box_cmp_op(map->op, lhs, rhs);
+	rcode = fr_value_box_cmp_op(opands->op, lhs, rhs);
 finish:
 	switch (rcode) {
 	case 0:
@@ -406,7 +406,7 @@ done:
  */
 static int cond_normalise_and_cmp(request_t *request, fr_cond_t const *c, fr_value_box_t const *lhs)
 {
-	map_t const		*map = c->data.map;
+	fr_cond_opands_t const		*opands = c->opand.binary;
 
 	int			rcode;
 
@@ -453,10 +453,10 @@ do {\
 	 *	Regular expressions need both operands to be strings
 	 */
 #ifdef HAVE_REGEX
-	if (map->op == T_OP_REG_EQ) {
+	if (opands->op == T_OP_REG_EQ) {
 		cast_type = FR_TYPE_STRING;
 
-		if (tmpl_is_regex_xlat(map->rhs)) escape = regex_escape;
+		if (tmpl_is_regex_xlat(opands->rhs)) escape = regex_escape;
 	}
 	else
 #endif
@@ -468,10 +468,10 @@ do {\
 	 */
 	if (c->pass2_fixup == PASS2_PAIRCOMPARE) {
 		fr_assert(!c->cast);
-		fr_assert(tmpl_is_attr(map->lhs));
-		fr_assert(!tmpl_is_attr(map->rhs) || !paircmp_find(tmpl_da(map->rhs))); /* expensive assert */
+		fr_assert(tmpl_is_attr(opands->lhs));
+		fr_assert(!tmpl_is_attr(opands->rhs) || !paircmp_find(tmpl_da(opands->rhs))); /* expensive assert */
 
-		cast = tmpl_da(map->lhs);
+		cast = tmpl_da(opands->lhs);
 
 		EVAL_DEBUG("NORMALISATION TYPE %s (PAIRCMP TYPE)",
 			   fr_table_str_by_value(fr_value_box_type_table, cast->type, "<INVALID>"));
@@ -485,34 +485,34 @@ do {\
 		cast = c->cast;
 		EVAL_DEBUG("NORMALISATION TYPE %s (EXPLICIT CAST)",
 			   fr_table_str_by_value(fr_value_box_type_table, cast->type, "<INVALID>"));
-	} else if (tmpl_is_attr(map->lhs)) {
-		cast = tmpl_da(map->lhs);
+	} else if (tmpl_is_attr(opands->lhs)) {
+		cast = tmpl_da(opands->lhs);
 		EVAL_DEBUG("NORMALISATION TYPE %s (IMPLICIT FROM LHS REF)",
 			   fr_table_str_by_value(fr_value_box_type_table, cast->type, "<INVALID>"));
-	} else if (tmpl_is_attr(map->rhs)) {
-		cast = tmpl_da(map->rhs);
+	} else if (tmpl_is_attr(opands->rhs)) {
+		cast = tmpl_da(opands->rhs);
 		EVAL_DEBUG("NORMALISATION TYPE %s (IMPLICIT FROM RHS REF)",
 			   fr_table_str_by_value(fr_value_box_type_table, cast->type, "<INVALID>"));
-	} else if (tmpl_is_data(map->lhs)) {
-		cast_type = tmpl_value_type(map->lhs);
+	} else if (tmpl_is_data(opands->lhs)) {
+		cast_type = tmpl_value_type(opands->lhs);
 		EVAL_DEBUG("NORMALISATION TYPE %s (IMPLICIT FROM LHS DATA)",
 			   fr_table_str_by_value(fr_value_box_type_table, cast_type, "<INVALID>"));
-	} else if (tmpl_is_data(map->rhs)) {
-		cast_type = tmpl_value_type(map->rhs);
+	} else if (tmpl_is_data(opands->rhs)) {
+		cast_type = tmpl_value_type(opands->rhs);
 		EVAL_DEBUG("NORMALISATION TYPE %s (IMPLICIT FROM RHS DATA)",
 			   fr_table_str_by_value(fr_value_box_type_table, cast_type, "<INVALID>"));
 	}
 
 	if (cast) cast_type = cast->type;
 
-	switch (map->rhs->type) {
+	switch (opands->rhs->type) {
 	case TMPL_TYPE_ATTR:
 	{
 		fr_pair_t		*vp;
 		fr_cursor_t		cursor;
 		tmpl_cursor_ctx_t	cc;
 
-		for (vp = tmpl_cursor_init(&rcode, request, &cc, &cursor, request, map->rhs);
+		for (vp = tmpl_cursor_init(&rcode, request, &cc, &cursor, request, opands->rhs);
 		     vp;
 	     	     vp = fr_cursor_next(&cursor)) {
 			rhs = &vp->data;
@@ -531,7 +531,7 @@ do {\
 		break;
 
 	case TMPL_TYPE_DATA:
-		rhs = tmpl_value(map->rhs);
+		rhs = tmpl_value(opands->rhs);
 
 		CHECK_INT_CAST(lhs, rhs);
 		CAST(lhs);
@@ -552,10 +552,10 @@ do {\
 		ssize_t ret;
 		fr_value_box_t data;
 
-		if (!tmpl_is_unresolved(map->rhs)) {
+		if (!tmpl_is_unresolved(opands->rhs)) {
 			char *p;
 
-			ret = tmpl_aexpand(request, &p, request, map->rhs, escape, NULL);
+			ret = tmpl_aexpand(request, &p, request, opands->rhs, escape, NULL);
 			if (ret < 0) {
 				EVAL_DEBUG("FAIL [%i]", __LINE__);
 				rcode = -1;
@@ -563,7 +563,7 @@ do {\
 			}
 			fr_value_box_bstrndup_shallow(&data, NULL, p, ret, false);
 		} else {
-			fr_value_box_bstrdup_buffer_shallow(NULL, &data, NULL, map->rhs->data.unescaped, false);
+			fr_value_box_bstrdup_buffer_shallow(NULL, &data, NULL, opands->rhs->data.unescaped, false);
 		}
 		rhs = &data;
 
@@ -572,7 +572,7 @@ do {\
 		CAST(rhs);
 
 		rcode = cond_cmp_values(request, c, lhs, rhs);
-		if (!tmpl_is_unresolved(map->rhs)) talloc_free(data.datum.ptr);
+		if (!tmpl_is_unresolved(opands->rhs)) talloc_free(data.datum.ptr);
 
 		break;
 	}
@@ -609,7 +609,7 @@ finish:
 }
 
 
-/** Evaluate a map
+/** Evaluate a opands
  *
  * @param[in] request the request_t
  * @param[in] depth of the recursion (only used for debugging)
@@ -619,19 +619,19 @@ finish:
  *	- 0 for "no match".
  *	- 1 for "match".
  */
-int cond_eval_map(request_t *request, UNUSED int depth, fr_cond_t const *c)
+int cond_eval_binary(request_t *request, UNUSED int depth, fr_cond_t const *c)
 {
 	int rcode = 0;
 
-	map_t const *map = c->data.map;
+	fr_cond_opands_t const *opands = c->opand.binary;
 
 	EVAL_DEBUG(">>> MAP TYPES LHS: %s, RHS: %s",
-		   fr_table_str_by_value(tmpl_type_table, map->lhs->type, "???"),
-		   fr_table_str_by_value(tmpl_type_table, map->rhs->type, "???"));
+		   fr_table_str_by_value(tmpl_type_table, opands->lhs->type, "???"),
+		   fr_table_str_by_value(tmpl_type_table, opands->rhs->type, "???"));
 
-	MAP_VERIFY(map);
+	MAP_VERIFY(opands);
 
-	switch (map->lhs->type) {
+	switch (opands->lhs->type) {
 	/*
 	 *	LHS is an attribute or list
 	 */
@@ -645,14 +645,14 @@ int cond_eval_map(request_t *request, UNUSED int depth, fr_cond_t const *c)
 		 *	Legacy paircmp call, skip processing the magic attribute
 		 *	if it's the LHS and cast RHS to the same type.
 		 */
-		if ((c->pass2_fixup == PASS2_PAIRCOMPARE) && (map->op != T_OP_REG_EQ)) {
+		if ((c->pass2_fixup == PASS2_PAIRCOMPARE) && (opands->op != T_OP_REG_EQ)) {
 #ifndef NDEBUG
-			fr_assert(paircmp_find(tmpl_da(map->lhs))); /* expensive assert */
+			fr_assert(paircmp_find(tmpl_da(opands->lhs))); /* expensive assert */
 #endif
 			rcode = cond_normalise_and_cmp(request, c, NULL);
 			break;
 		}
-		for (vp = tmpl_cursor_init(&rcode, request, &cc, &cursor, request, map->lhs);
+		for (vp = tmpl_cursor_init(&rcode, request, &cc, &cursor, request, opands->lhs);
 		     vp;
 	     	     vp = fr_cursor_next(&cursor)) {
 			/*
@@ -669,7 +669,7 @@ int cond_eval_map(request_t *request, UNUSED int depth, fr_cond_t const *c)
 		break;
 
 	case TMPL_TYPE_DATA:
-		rcode = cond_normalise_and_cmp(request, c, tmpl_value(map->lhs));
+		rcode = cond_normalise_and_cmp(request, c, tmpl_value(opands->lhs));
 		break;
 
 	case TMPL_TYPE_UNRESOLVED:
@@ -680,8 +680,8 @@ int cond_eval_map(request_t *request, UNUSED int depth, fr_cond_t const *c)
 		ssize_t		ret;
 		fr_value_box_t	data;
 
-		if (!tmpl_is_unresolved(map->lhs)) {
-			ret = tmpl_aexpand(request, &p, request, map->lhs, NULL, NULL);
+		if (!tmpl_is_unresolved(opands->lhs)) {
+			ret = tmpl_aexpand(request, &p, request, opands->lhs, NULL, NULL);
 			if (ret < 0) {
 				EVAL_DEBUG("FAIL [%i]", __LINE__);
 				return ret;
@@ -689,7 +689,7 @@ int cond_eval_map(request_t *request, UNUSED int depth, fr_cond_t const *c)
 
 			fr_value_box_bstrndup_shallow(&data, NULL, p, ret, false);
 		} else {
-			fr_value_box_bstrdup_buffer_shallow(NULL, &data, NULL, map->lhs->data.unescaped, false);
+			fr_value_box_bstrdup_buffer_shallow(NULL, &data, NULL, opands->lhs->data.unescaped, false);
 		}
 
 		rcode = cond_normalise_and_cmp(request, c, &data);
@@ -744,20 +744,20 @@ int cond_eval(request_t *request, rlm_rcode_t modreturn, int depth, fr_cond_t co
 
 	while (c) {
 		switch (c->type) {
-		case COND_TYPE_TMPL:
-			rcode = cond_eval_tmpl(request, depth, c->data.vpt);
+		case COND_TYPE_UNARY:
+			rcode = cond_eval_unary(request, depth, c->opand.unary);
 			break;
 
 		case COND_TYPE_RCODE:
-			rcode = (c->data.rcode == modreturn);
+			rcode = (c->opand.rcode == modreturn);
 			break;
 
-		case COND_TYPE_MAP:
-			rcode = cond_eval_map(request, depth, c);
+		case COND_TYPE_BINARY:
+			rcode = cond_eval_binary(request, depth, c);
 			break;
 
 		case COND_TYPE_CHILD:
-			rcode = cond_eval(request, modreturn, depth + 1, c->data.child);
+			rcode = cond_eval(request, modreturn, depth + 1, c->opand.child);
 			break;
 
 		case COND_TYPE_TRUE:

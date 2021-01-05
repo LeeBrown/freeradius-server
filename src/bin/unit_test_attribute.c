@@ -1215,9 +1215,9 @@ static size_t command_condition_normalise(command_result_t *result, command_file
 	}
 
 	if (fr_debug_lvl > DEBUG_ENABLED3) {
-		if (cond->type == COND_TYPE_MAP) {
-			if (cond->data.map->lhs) tmpl_debug(cond->data.map->lhs);
-			if (cond->data.map->rhs) tmpl_debug(cond->data.map->rhs);
+		if (cond->type == COND_TYPE_BINARY) {
+			if (cond->opand.binary->lhs) tmpl_debug(cond->opand.binary->lhs);
+			if (cond->opand.binary->rhs) tmpl_debug(cond->opand.binary->rhs);
 		}
 	}
 

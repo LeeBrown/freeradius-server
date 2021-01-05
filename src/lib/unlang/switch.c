@@ -41,21 +41,21 @@ static unlang_action_t unlang_switch(UNUSED rlm_rcode_t *p_result, request_t *re
 	unlang_switch_t	*switch_gext;
 
 	fr_cond_t		cond;
-	map_t		map;
+	fr_cond_opands_t	opands;
 	tmpl_t			vpt;
 
 	switch_g = unlang_generic_to_group(instruction);
 	switch_gext = unlang_group_to_switch(switch_g);
 
 	memset(&cond, 0, sizeof(cond));
-	memset(&map, 0, sizeof(map));
+	memset(&opands, 0, sizeof(opands));
 	memset(&vpt, 0, sizeof(vpt));
 
-	cond.type = COND_TYPE_MAP;
-	cond.data.map = &map;
+	cond.type = COND_TYPE_BINARY;
+	cond.opand.binary = &opands;
 
-	map.op = T_OP_CMP_EQ;
-	map.ci = cf_section_to_item(switch_g->cs);
+	opands.op = T_OP_CMP_EQ;
+	opands.ci = cf_section_to_item(switch_g->cs);
 
 	fr_assert(switch_gext->vpt != NULL);
 
@@ -130,8 +130,8 @@ static unlang_action_t unlang_switch(UNUSED rlm_rcode_t *p_result, request_t *re
 		 *	to the type of the attribute.
 		 */
 		if (tmpl_is_attr(switch_gext->vpt) && !tmpl_is_data(case_gext->vpt)) {
-			map.rhs = switch_gext->vpt;
-			map.lhs = case_gext->vpt;
+			opands.rhs = switch_gext->vpt;
+			opands.lhs = case_gext->vpt;
 			cond.cast = tmpl_da(switch_gext->vpt);
 
 			/*
@@ -148,20 +148,20 @@ static unlang_action_t unlang_switch(UNUSED rlm_rcode_t *p_result, request_t *re
 		} else if (tmpl_is_xlat(switch_gext->vpt) ||
 			   tmpl_is_xlat_unresolved(switch_gext->vpt) ||
 			   tmpl_is_exec(switch_gext->vpt)) {
-			map.rhs = case_gext->vpt;
-			map.lhs = &vpt;
+			opands.rhs = case_gext->vpt;
+			opands.lhs = &vpt;
 			cond.cast = NULL;
 
 		/*
 		 *	Else evaluate the 'switch' statement.
 		 */
 		} else {
-			map.rhs = case_gext->vpt;
-			map.lhs = switch_gext->vpt;
+			opands.rhs = case_gext->vpt;
+			opands.lhs = switch_gext->vpt;
 			cond.cast = NULL;
 		}
 
-		if (cond_eval_map(request, 0, &cond) == 1) {
+		if (cond_eval_binary(request, 0, &cond) == 1) {
 			found = this;
 			break;
 		}

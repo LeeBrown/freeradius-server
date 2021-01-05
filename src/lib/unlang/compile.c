@@ -196,10 +196,10 @@ static bool pass2_fixup_tmpl(TALLOC_CTX *ctx, CONF_ITEM const *ci, tmpl_t **vpt_
 
 static bool pass2_fixup_map(fr_cond_t *c)
 {
-	tmpl_t		*vpt;
-	map_t	*map;
+	tmpl_t				*vpt;
+	fr_cond_opands_t		*opands;
 
-	map = c->data.map;	/* shorter */
+	opands = c->opand.binary;	/* shorter */
 
 	/*
 	 *	Auth-Type := foo
@@ -207,10 +207,10 @@ static bool pass2_fixup_map(fr_cond_t *c)
 	 *	Where "foo" is dynamically defined.
 	 */
 	if (c->pass2_fixup == PASS2_FIXUP_TYPE) {
-		if (!fr_dict_enum_by_name(tmpl_da(map->lhs), map->rhs->name, -1)) {
-			cf_log_err(map->ci, "Invalid reference to non-existent %s %s { ... }",
-				   tmpl_da(map->lhs)->name,
-				   map->rhs->name);
+		if (!fr_dict_enum_by_name(tmpl_da(opands->lhs), opands->rhs->name, -1)) {
+			cf_log_err(opands->ci, "Invalid reference to non-existent %s %s { ... }",
+				   tmpl_da(opands->lhs)->name,
+				   opands->rhs->name);
 			return false;
 		}
 
@@ -227,30 +227,30 @@ static bool pass2_fixup_map(fr_cond_t *c)
 		/*
 		 *	Resolve the attribute references first
 		 */
-		if (tmpl_is_attr_unresolved(map->lhs)) {
-			if (!pass2_fixup_tmpl(map, map->ci, &map->lhs)) return false;
-			if (!cast) cast = tmpl_da(map->lhs);
+		if (tmpl_is_attr_unresolved(opands->lhs)) {
+			if (!pass2_fixup_tmpl(opands, opands->ci, &opands->lhs)) return false;
+			if (!cast) cast = tmpl_da(opands->lhs);
 		}
 
-		if (tmpl_is_attr_unresolved(map->rhs)) {
-			if (!pass2_fixup_tmpl(map, map->ci, &map->rhs)) return false;
-			if (!cast) cast = tmpl_da(map->rhs);
+		if (tmpl_is_attr_unresolved(opands->rhs)) {
+			if (!pass2_fixup_tmpl(opands, opands->ci, &opands->rhs)) return false;
+			if (!cast) cast = tmpl_da(opands->rhs);
 		}
 
 		/*
 		 *	Then fixup the other side if it was unresolved
 		 */
-		if (tmpl_is_unresolved(map->lhs)) {
+		if (tmpl_is_unresolved(opands->lhs)) {
 			switch (cast->type) {
 			case FR_TYPE_IPV4_ADDR:
-				if (strchr(c->data.map->lhs->name, '/') != NULL) {
+				if (strchr(c->opand.binary->lhs->name, '/') != NULL) {
 					c->cast = cast = fr_dict_attr_child_by_num(fr_dict_root(fr_dict_internal()),
 										   FR_CAST_BASE + FR_TYPE_IPV4_PREFIX);
 				}
 				break;
 
 			case FR_TYPE_IPV6_ADDR:
-				if (strchr(c->data.map->lhs->name, '/') != NULL) {
+				if (strchr(c->opand.binary->lhs->name, '/') != NULL) {
 					c->cast = cast = fr_dict_attr_child_by_num(fr_dict_root(fr_dict_internal()),
 						    				   FR_CAST_BASE + FR_TYPE_IPV6_PREFIX);
 				}
@@ -260,24 +260,24 @@ static bool pass2_fixup_map(fr_cond_t *c)
 				break;
 			}
 
-			if (tmpl_cast_in_place(c->data.map->lhs, cast->type, cast) < 0) {
-				cf_log_err(map->ci, "Failed to parse data type %s from string: %pV",
+			if (tmpl_cast_in_place(c->opand.binary->lhs, cast->type, cast) < 0) {
+				cf_log_err(opands->ci, "Failed to parse data type %s from string: %pV",
 					   fr_table_str_by_value(fr_value_box_type_table, cast->type, "<UNKNOWN>"),
-					   fr_box_strvalue_len(map->lhs->name, map->lhs->len));
+					   fr_box_strvalue_len(opands->lhs->name, opands->lhs->len));
 
 				return false;
 			}
-		} else if (tmpl_is_unresolved(map->rhs)) {
+		} else if (tmpl_is_unresolved(opands->rhs)) {
 			switch (cast->type) {
 			case FR_TYPE_IPV4_ADDR:
-				if (strchr(c->data.map->rhs->name, '/') != NULL) {
+				if (strchr(c->opand.binary->rhs->name, '/') != NULL) {
 					c->cast = cast = fr_dict_attr_child_by_num(fr_dict_root(fr_dict_internal()),
 										   FR_CAST_BASE + FR_TYPE_IPV4_PREFIX);
 				}
 				break;
 
 			case FR_TYPE_IPV6_ADDR:
-				if (strchr(c->data.map->rhs->name, '/') != NULL) {
+				if (strchr(c->opand.binary->rhs->name, '/') != NULL) {
 					c->cast = cast = fr_dict_attr_child_by_num(fr_dict_root(fr_dict_internal()),
 						    				   FR_CAST_BASE + FR_TYPE_IPV6_PREFIX);
 				}
@@ -287,10 +287,10 @@ static bool pass2_fixup_map(fr_cond_t *c)
 				break;
 			}
 
-			if (tmpl_cast_in_place(c->data.map->rhs, cast->type, cast) < 0) {
-				cf_log_err(map->ci, "Failed to parse data type %s from string: %pV",
+			if (tmpl_cast_in_place(c->opand.binary->rhs, cast->type, cast) < 0) {
+				cf_log_err(opands->ci, "Failed to parse data type %s from string: %pV",
 					   fr_table_str_by_value(fr_value_box_type_table, cast->type, "<UNKNOWN>"),
-					   fr_box_strvalue_len(map->rhs->name, map->rhs->len));
+					   fr_box_strvalue_len(opands->rhs->name, opands->rhs->len));
 				return false;
 			}
 		}
@@ -307,19 +307,19 @@ static bool pass2_fixup_map(fr_cond_t *c)
 	/*
 	 *	Precompile xlat's
 	 */
-	if (tmpl_is_xlat_unresolved(map->lhs)) {
+	if (tmpl_is_xlat_unresolved(opands->lhs)) {
 		/*
 		 *	Compile the LHS to an attribute reference only
 		 *	if the RHS is a literal.
 		 *
 		 *	@todo v3.1: allow anything anywhere.
 		 */
-		if (!tmpl_is_unresolved(map->rhs)) {
-			if (!pass2_fixup_tmpl(map, map->ci, &map->lhs)) {
+		if (!tmpl_is_unresolved(opands->rhs)) {
+			if (!pass2_fixup_tmpl(opands, opands->ci, &opands->lhs)) {
 				return false;
 			}
 		} else {
-			if (!pass2_fixup_tmpl(map, map->ci, &map->lhs)) {
+			if (!pass2_fixup_tmpl(opands, opands->ci, &opands->lhs)) {
 				return false;
 			}
 
@@ -335,30 +335,30 @@ static bool pass2_fixup_map(fr_cond_t *c)
 			 *	But now we've just converted "%{Attr}"
 			 *	to &Attr, so we've got to do it again.
 			 */
-			if (tmpl_is_attr(map->lhs)) {
-				if ((map->rhs->len > 0) ||
-				    (map->op != T_OP_CMP_EQ) ||
-				    (tmpl_da(map->lhs)->type == FR_TYPE_STRING) ||
-				    (tmpl_da(map->lhs)->type == FR_TYPE_OCTETS)) {
+			if (tmpl_is_attr(opands->lhs)) {
+				if ((opands->rhs->len > 0) ||
+				    (opands->op != T_OP_CMP_EQ) ||
+				    (tmpl_da(opands->lhs)->type == FR_TYPE_STRING) ||
+				    (tmpl_da(opands->lhs)->type == FR_TYPE_OCTETS)) {
 
-					if (tmpl_cast_in_place(map->rhs, tmpl_da(map->lhs)->type, tmpl_da(map->lhs)) < 0) {
-						cf_log_err(map->ci, "Failed to parse data type %s from string: %pV",
-							   fr_table_str_by_value(fr_value_box_type_table, tmpl_da(map->lhs)->type, "<UNKNOWN>"),
-							   fr_box_strvalue_len(map->rhs->name, map->rhs->len));
+					if (tmpl_cast_in_place(opands->rhs, tmpl_da(opands->lhs)->type, tmpl_da(opands->lhs)) < 0) {
+						cf_log_err(opands->ci, "Failed to parse data type %s from string: %pV",
+							   fr_table_str_by_value(fr_value_box_type_table, tmpl_da(opands->lhs)->type, "<UNKNOWN>"),
+							   fr_box_strvalue_len(opands->rhs->name, opands->rhs->len));
 						return false;
 					} /* else the cast was successful */
 
 				} else {	/* RHS is empty, it's just a check for empty / non-empty string */
-					vpt = talloc_steal(c, map->lhs);
-					map->lhs = NULL;
-					talloc_free(c->data.map);
+					vpt = talloc_steal(c, opands->lhs);
+					opands->lhs = NULL;
+					talloc_free(c->opand.binary);
 
 					/*
 					 *	"%{Foo}" == '' ---> !Foo
 					 *	"%{Foo}" != '' ---> Foo
 					 */
-					c->type = COND_TYPE_TMPL;
-					c->data.vpt = vpt;
+					c->type = COND_TYPE_UNARY;
+					c->opand.unary = vpt;
 					c->negate = !c->negate;
 
 					WARN("%s[%d]: Please change (\"%%{%s}\" %s '') to %c&%s",
@@ -376,7 +376,7 @@ static bool pass2_fixup_map(fr_cond_t *c)
 		}
 	}
 
-	if (tmpl_is_xlat_unresolved(map->rhs)) {
+	if (tmpl_is_xlat_unresolved(opands->rhs)) {
 		/*
 		 *	Convert the RHS to an attribute reference only
 		 *	if the LHS is an attribute reference, AND is
@@ -387,21 +387,21 @@ static bool pass2_fixup_map(fr_cond_t *c)
 		 *	on the RHS.  For now, the code in parser.c
 		 *	forbids this.
 		 */
-		if (tmpl_is_attr(map->lhs)) {
-			if (!pass2_fixup_tmpl(map, map->ci, &map->rhs)) return false;
+		if (tmpl_is_attr(opands->lhs)) {
+			if (!pass2_fixup_tmpl(opands, opands->ci, &opands->rhs)) return false;
 		} else {
-			if (!pass2_fixup_tmpl(map, map->ci, &map->rhs)) return false;
+			if (!pass2_fixup_tmpl(opands, opands->ci, &opands->rhs)) return false;
 		}
 	}
 
-	if (tmpl_is_exec_unresolved(map->lhs)) {
-		if (!pass2_fixup_tmpl(map, map->ci, &map->lhs)) {
+	if (tmpl_is_exec_unresolved(opands->lhs)) {
+		if (!pass2_fixup_tmpl(opands, opands->ci, &opands->lhs)) {
 			return false;
 		}
 	}
 
-	if (tmpl_is_exec_unresolved(map->rhs)) {
-		if (!pass2_fixup_tmpl(map, map->ci, &map->rhs)) {
+	if (tmpl_is_exec_unresolved(opands->rhs)) {
+		if (!pass2_fixup_tmpl(opands, opands->ci, &opands->rhs)) {
 			return false;
 		}
 	}
@@ -409,13 +409,13 @@ static bool pass2_fixup_map(fr_cond_t *c)
 	/*
 	 *	Convert bare refs to %{Foreach-Variable-N}
 	 */
-	if (tmpl_is_unresolved(map->lhs) &&
-	    (strncmp(map->lhs->name, "Foreach-Variable-", 17) == 0)) {
+	if (tmpl_is_unresolved(opands->lhs) &&
+	    (strncmp(opands->lhs->name, "Foreach-Variable-", 17) == 0)) {
 		char *fmt;
 		ssize_t slen;
 
-		fmt = talloc_typed_asprintf(map->lhs, "%%{%s}", map->lhs->name);
-		slen = tmpl_afrom_substr(map, &vpt, &FR_SBUFF_IN(fmt, talloc_array_length(fmt) - 1),
+		fmt = talloc_typed_asprintf(opands->lhs, "%%{%s}", opands->lhs->name);
+		slen = tmpl_afrom_substr(opands, &vpt, &FR_SBUFF_IN(fmt, talloc_array_length(fmt) - 1),
 					 T_DOUBLE_QUOTED_STRING,
 					 NULL,
 					 &(tmpl_rules_t){
@@ -424,11 +424,11 @@ static bool pass2_fixup_map(fr_cond_t *c)
 		if (!vpt) {
 			char *spaces, *text;
 
-			fr_canonicalize_error(map->ci, &spaces, &text, slen, fr_strerror());
+			fr_canonicalize_error(opands->ci, &spaces, &text, slen, fr_strerror());
 
-			cf_log_err(map->ci, "Failed converting %s to xlat", map->lhs->name);
-			cf_log_err(map->ci, "%s", fmt);
-			cf_log_err(map->ci, "%s^ %s", spaces, text);
+			cf_log_err(opands->ci, "Failed converting %s to xlat", opands->lhs->name);
+			cf_log_err(opands->ci, "%s", fmt);
+			cf_log_err(opands->ci, "%s^ %s", spaces, text);
 
 			talloc_free(spaces);
 			talloc_free(text);
@@ -436,17 +436,17 @@ static bool pass2_fixup_map(fr_cond_t *c)
 
 			return false;
 		}
-		talloc_free(map->lhs);
-		map->lhs = vpt;
+		talloc_free(opands->lhs);
+		opands->lhs = vpt;
 	}
 
 #ifdef HAVE_REGEX
-	if (tmpl_is_regex_xlat_unresolved(map->rhs)) {
-		if (!pass2_fixup_tmpl(map, map->ci, &map->rhs)) {
+	if (tmpl_is_regex_xlat_unresolved(opands->rhs)) {
+		if (!pass2_fixup_tmpl(opands, opands->ci, &opands->rhs)) {
 			return false;
 		}
 	}
-	fr_assert(!tmpl_is_regex_xlat_unresolved(map->lhs));
+	fr_assert(!tmpl_is_regex_xlat_unresolved(opands->lhs));
 #endif
 
 	/*
@@ -455,7 +455,7 @@ static bool pass2_fixup_map(fr_cond_t *c)
 	 *	find an attribute reference doesn't work, but the
 	 *	xlat code does.
 	 */
-	vpt = c->data.map->lhs;
+	vpt = c->opand.binary->lhs;
 	if (tmpl_is_attr(vpt) && tmpl_da(vpt)->flags.virtual) {
 		if (tmpl_attr_to_xlat(c, &vpt) < 0) return false;
 	}
@@ -469,27 +469,27 @@ static bool pass2_fixup_map(fr_cond_t *c)
 	 *	they can only be with the current request_t, and only
 	 *	with the request pairs.
 	 */
-	if (!tmpl_is_attr(map->lhs) ||
-	    (tmpl_request(map->lhs) != REQUEST_CURRENT) ||
-	    (tmpl_list(map->lhs) != PAIR_LIST_REQUEST)) {
+	if (!tmpl_is_attr(opands->lhs) ||
+	    (tmpl_request(opands->lhs) != REQUEST_CURRENT) ||
+	    (tmpl_list(opands->lhs) != PAIR_LIST_REQUEST)) {
 		return true;
 	}
 
-	if (!paircmp_find(tmpl_da(map->lhs))) return true;
+	if (!paircmp_find(tmpl_da(opands->lhs))) return true;
 
-	if (tmpl_is_regex_xlat_unresolved(map->rhs)) {
-		cf_log_err(map->ci, "Cannot compare virtual attribute %s via a regex", map->lhs->name);
+	if (tmpl_is_regex_xlat_unresolved(opands->rhs)) {
+		cf_log_err(opands->ci, "Cannot compare virtual attribute %s via a regex", opands->lhs->name);
 		return false;
 	}
 
 	if (c->cast) {
-		cf_log_err(map->ci, "Cannot cast virtual attribute %s to %s", map->lhs->name,
+		cf_log_err(opands->ci, "Cannot cast virtual attribute %s to %s", opands->lhs->name,
 			   fr_table_str_by_value(fr_value_box_type_table, c->cast->type, "<INVALID>"));
 		return false;
 	}
 
-	if (map->op != T_OP_CMP_EQ) {
-		cf_log_err(map->ci, "Must use '==' for comparisons with virtual attribute %s", map->lhs->name);
+	if (opands->op != T_OP_CMP_EQ) {
+		cf_log_err(opands->ci, "Must use '==' for comparisons with virtual attribute %s", opands->lhs->name);
 		return false;
 	}
 
@@ -519,19 +519,19 @@ static bool pass2_cond_callback(fr_cond_t *c, UNUSED void *uctx)
 	 *	Call children.
 	 */
 	case COND_TYPE_CHILD:
-		return pass2_cond_callback(c->data.child, uctx);
+		return pass2_cond_callback(c->opand.child, uctx);
 
 	/*
 	 *	Fix up the template.
 	 */
-	case COND_TYPE_TMPL:
-		fr_assert(!tmpl_is_regex_xlat_unresolved(c->data.vpt));
-		return pass2_fixup_tmpl(c, c->ci, &c->data.vpt);
+	case COND_TYPE_UNARY:
+		fr_assert(!tmpl_is_regex_xlat_unresolved(c->opand.unary));
+		return pass2_fixup_tmpl(c, c->ci, &c->opand.unary);
 
 	/*
 	 *	Fixup the map
 	 */
-	case COND_TYPE_MAP:
+	case COND_TYPE_BINARY:
 		return pass2_fixup_map(c);
 
 	/*

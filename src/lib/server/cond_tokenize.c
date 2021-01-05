@@ -75,6 +75,47 @@ fr_table_num_sorted_t const cond_cmp_op_table[] = {
 };
 size_t cond_cmp_op_table_len = NUM_ELEMENTS(cond_cmp_op_table);
 
+
+/** Print opands to a string
+ *
+ * @param[out] out	Buffer to write string to.
+ * @param[in] opands	to print.
+ * @return
+ *	- The number of bytes written to the out buffer.
+ *	- A number >= outlen if truncation has occurred.
+ */
+static inline CC_HINT(always_inline) ssize_t opands_print(fr_sbuff_t *out, fr_cond_opands_t const *opands)
+{
+	fr_sbuff_t	our_out = FR_SBUFF_NO_ADVANCE(out);
+
+	/*
+	 *	Print the lhs
+	 */
+	FR_SBUFF_RETURN(tmpl_print_quoted, &our_out, opands->lhs, TMPL_ATTR_REF_PREFIX_YES);
+
+	/*
+	 *	Print separators and operator
+	 */
+	FR_SBUFF_IN_CHAR_RETURN(&our_out, ' ');
+	FR_SBUFF_IN_STRCPY_RETURN(&our_out, fr_token_name(opands->op));
+	FR_SBUFF_IN_CHAR_RETURN(&our_out, ' ');
+
+	/*
+	 *	The RHS doesn't matter for many operators
+	 */
+	if ((opands->op == T_OP_CMP_TRUE) || (opands->op == T_OP_CMP_FALSE)) {
+		FR_SBUFF_IN_STRCPY_RETURN(&our_out, "ANY");
+		return fr_sbuff_set(out, &our_out);
+	}
+
+	/*
+	 *	Print the RHS.
+	 */
+	FR_SBUFF_RETURN(tmpl_print_quoted, &our_out, opands->rhs, TMPL_ATTR_REF_PREFIX_YES);
+
+	return fr_sbuff_set(out, &our_out);
+}
+
 /*
  *	This file shouldn't use any functions from the server core.
  */
@@ -87,33 +128,33 @@ ssize_t cond_print(fr_sbuff_t *out, fr_cond_t const *in)
 		if (c->negate) FR_SBUFF_IN_CHAR_RETURN(&our_out, '!');
 
 		switch (c->type) {
-		case COND_TYPE_TMPL:
-			fr_assert(c->data.vpt != NULL);
+		case COND_TYPE_UNARY:
+			fr_assert(c->opand.unary != NULL);
 			if (c->cast) {
 				FR_SBUFF_IN_SPRINTF_RETURN(&our_out, "<%s>",
 							   fr_table_str_by_value(fr_value_box_type_table,
 										 c->cast->type, "??"));
 			}
-			FR_SBUFF_RETURN(tmpl_print_quoted, &our_out, c->data.vpt, TMPL_ATTR_REF_PREFIX_YES);
+			FR_SBUFF_RETURN(tmpl_print_quoted, &our_out, c->opand.unary, TMPL_ATTR_REF_PREFIX_YES);
 			break;
 
 		case COND_TYPE_RCODE:
-			fr_assert(c->data.rcode != RLM_MODULE_UNKNOWN);
-			FR_SBUFF_IN_STRCPY_RETURN(&our_out, fr_table_str_by_value(rcode_table, c->data.rcode, ""));
+			fr_assert(c->opand.rcode != RLM_MODULE_UNKNOWN);
+			FR_SBUFF_IN_STRCPY_RETURN(&our_out, fr_table_str_by_value(rcode_table, c->opand.rcode, ""));
 			break;
 
-		case COND_TYPE_MAP:
+		case COND_TYPE_BINARY:
 			if (c->cast) {
 				FR_SBUFF_IN_SPRINTF_RETURN(&our_out, "<%s>",
 							   fr_table_str_by_value(fr_value_box_type_table,
 										 c->cast->type, "??"));
 			}
-			FR_SBUFF_RETURN(map_print, &our_out, c->data.map);
+			FR_SBUFF_RETURN(opands_print, &our_out, c->opand.binary);
 			break;
 
 		case COND_TYPE_CHILD:
 			FR_SBUFF_IN_CHAR_RETURN(&our_out, '(');
-			FR_SBUFF_RETURN(cond_print, &our_out, c->data.child);
+			FR_SBUFF_RETURN(cond_print, &our_out, c->opand.child);
 			FR_SBUFF_IN_CHAR_RETURN(&our_out, ')');
 			break;
 
@@ -155,56 +196,56 @@ static bool cond_type_check(fr_cond_t *c, fr_type_t lhs_type)
 	 *	then add a cast to the LHS.
 	 */
 	if (lhs_type == FR_TYPE_UINT64) {
-		if ((tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT32) ||
-		    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT16) ||
-		    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT8)) {
+		if ((tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT32) ||
+		    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT16) ||
+		    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT8)) {
 			c->cast = NULL;
 			return true;
 		}
 	}
 
 	if (lhs_type == FR_TYPE_UINT32) {
-		if ((tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT16) ||
-		    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT8)) {
+		if ((tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT16) ||
+		    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT8)) {
 			c->cast = NULL;
 			return true;
 		}
 
-		if (tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT64) {
-			c->cast = tmpl_da(c->data.map->rhs);
+		if (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT64) {
+			c->cast = tmpl_da(c->opand.binary->rhs);
 			return true;
 		}
 	}
 
 	if (lhs_type == FR_TYPE_UINT16) {
-		if (tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT8) {
+		if (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT8) {
 			c->cast = NULL;
 			return true;
 		}
 
-		if ((tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT64) ||
-		    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT32)) {
-			c->cast = tmpl_da(c->data.map->rhs);
+		if ((tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT64) ||
+		    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT32)) {
+			c->cast = tmpl_da(c->opand.binary->rhs);
 			return true;
 		}
 	}
 
 	if (lhs_type == FR_TYPE_UINT8) {
-		if ((tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT64) ||
-		    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT32) ||
-		    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_UINT16)) {
-			c->cast = tmpl_da(c->data.map->rhs);
+		if ((tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT64) ||
+		    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT32) ||
+		    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_UINT16)) {
+			c->cast = tmpl_da(c->opand.binary->rhs);
 			return true;
 		}
 	}
 
 	if ((lhs_type == FR_TYPE_IPV4_PREFIX) &&
-	    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_IPV4_ADDR)) {
+	    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_IPV4_ADDR)) {
 		return true;
 	}
 
 	if ((lhs_type == FR_TYPE_IPV6_PREFIX) &&
-	    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_IPV6_ADDR)) {
+	    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_IPV6_ADDR)) {
 		return true;
 	}
 
@@ -213,14 +254,14 @@ static bool cond_type_check(fr_cond_t *c, fr_type_t lhs_type)
 	 *	with explicit cast for the interpretor.
 	 */
 	if ((lhs_type == FR_TYPE_IPV4_ADDR) &&
-	    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_IPV4_PREFIX)) {
-		c->cast = tmpl_da(c->data.map->rhs);
+	    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_IPV4_PREFIX)) {
+		c->cast = tmpl_da(c->opand.binary->rhs);
 		return true;
 	}
 
 	if ((lhs_type == FR_TYPE_IPV6_ADDR) &&
-	    (tmpl_da(c->data.map->rhs)->type == FR_TYPE_IPV6_PREFIX)) {
-		c->cast = tmpl_da(c->data.map->rhs);
+	    (tmpl_da(c->opand.binary->rhs)->type == FR_TYPE_IPV6_PREFIX)) {
+		c->cast = tmpl_da(c->opand.binary->rhs);
 		return true;
 	}
 
@@ -230,20 +271,20 @@ static bool cond_type_check(fr_cond_t *c, fr_type_t lhs_type)
 static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 			       char const *lhs, char const *rhs)
 {
-	if (tmpl_is_attr(c->data.map->rhs) &&
-	    (c->cast->type != tmpl_da(c->data.map->rhs)->type)) {
+	if (tmpl_is_attr(c->opand.binary->rhs) &&
+	    (c->cast->type != tmpl_da(c->opand.binary->rhs)->type)) {
 		if (cond_type_check(c, c->cast->type)) {
 			return 1;
 		}
 
 		fr_strerror_printf("Cannot compare types '%s' (cast) and '%s' (attr)",
 				   fr_table_str_by_value(fr_value_box_type_table, c->cast->type, "<INVALID>"),
-				   fr_table_str_by_value(fr_value_box_type_table, tmpl_da(c->data.map->rhs)->type, "<INVALID>"));
+				   fr_table_str_by_value(fr_value_box_type_table, tmpl_da(c->opand.binary->rhs)->type, "<INVALID>"));
 		return 0;
 	}
 
 #ifdef HAVE_REGEX
-	if (tmpl_contains_regex(c->data.map->rhs)) {
+	if (tmpl_contains_regex(c->opand.binary->rhs)) {
 		fr_strerror_const("Cannot use cast with regex comparison");
 		return -(rhs - start);
 	}
@@ -253,8 +294,8 @@ static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 	 *	The LHS is a literal which has been cast to a data type.
 	 *	Cast it to the appropriate data type.
 	 */
-	if (tmpl_is_unresolved(c->data.map->lhs) &&
-	    (tmpl_cast_in_place(c->data.map->lhs, c->cast->type, c->cast) < 0)) {
+	if (tmpl_is_unresolved(c->opand.binary->lhs) &&
+	    (tmpl_cast_in_place(c->opand.binary->lhs, c->cast->type, c->cast) < 0)) {
 		fr_strerror_const("Failed to parse field");
 		return -(lhs - start);
 	}
@@ -263,9 +304,9 @@ static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 	 *	The RHS is a literal, and the LHS has been cast to a data
 	 *	type.
 	 */
-	if ((tmpl_is_data(c->data.map->lhs)) &&
-	    (tmpl_is_unresolved(c->data.map->rhs)) &&
-	    (tmpl_cast_in_place(c->data.map->rhs, c->cast->type, c->cast) < 0)) {
+	if ((tmpl_is_data(c->opand.binary->lhs)) &&
+	    (tmpl_is_unresolved(c->opand.binary->rhs)) &&
+	    (tmpl_cast_in_place(c->opand.binary->rhs, c->cast->type, c->cast) < 0)) {
 		fr_strerror_const("Failed to parse field");
 		return -(rhs - start);
 	}
@@ -275,13 +316,13 @@ static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 	 *	types.  We check this based on
 	 *	their size.
 	 */
-	if (tmpl_is_attr(c->data.map->lhs)) {
+	if (tmpl_is_attr(c->opand.binary->lhs)) {
 		/*
 		 *      dst.min == src.min
 		 *	dst.max == src.max
 		 */
-		if ((dict_attr_sizes[c->cast->type][0] == dict_attr_sizes[tmpl_da(c->data.map->lhs)->type][0]) &&
-		    (dict_attr_sizes[c->cast->type][1] == dict_attr_sizes[tmpl_da(c->data.map->lhs)->type][1])) {
+		if ((dict_attr_sizes[c->cast->type][0] == dict_attr_sizes[tmpl_da(c->opand.binary->lhs)->type][0]) &&
+		    (dict_attr_sizes[c->cast->type][1] == dict_attr_sizes[tmpl_da(c->opand.binary->lhs)->type][1])) {
 			goto cast_ok;
 		}
 
@@ -289,15 +330,15 @@ static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 		 *	Run-time parsing of strings.
 		 *	Run-time copying of octets.
 		 */
-		if ((tmpl_da(c->data.map->lhs)->type == FR_TYPE_STRING) ||
-		    (tmpl_da(c->data.map->lhs)->type == FR_TYPE_OCTETS)) {
+		if ((tmpl_da(c->opand.binary->lhs)->type == FR_TYPE_STRING) ||
+		    (tmpl_da(c->opand.binary->lhs)->type == FR_TYPE_OCTETS)) {
 			goto cast_ok;
 		}
 
 		/*
 		 *	ifid to uint64 is OK
 		 */
-		if ((tmpl_da(c->data.map->lhs)->type == FR_TYPE_IFID) &&
+		if ((tmpl_da(c->opand.binary->lhs)->type == FR_TYPE_IFID) &&
 		    (c->cast->type == FR_TYPE_UINT64)) {
 			goto cast_ok;
 		}
@@ -305,7 +346,7 @@ static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 		/*
 		 *	ipaddr to ipv4prefix is OK
 		 */
-		if ((tmpl_da(c->data.map->lhs)->type == FR_TYPE_IPV4_ADDR) &&
+		if ((tmpl_da(c->opand.binary->lhs)->type == FR_TYPE_IPV4_ADDR) &&
 		    (c->cast->type == FR_TYPE_IPV4_PREFIX)) {
 			goto cast_ok;
 		}
@@ -313,7 +354,7 @@ static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 		/*
 		 *	ipv6addr to ipv6prefix is OK
 		 */
-		if ((tmpl_da(c->data.map->lhs)->type == FR_TYPE_IPV6_ADDR) &&
+		if ((tmpl_da(c->opand.binary->lhs)->type == FR_TYPE_IPV6_ADDR) &&
 		    (c->cast->type == FR_TYPE_IPV6_PREFIX)) {
 			goto cast_ok;
 		}
@@ -321,7 +362,7 @@ static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 		/*
 		 *	uint64 to ethernet is OK.
 		 */
-		if ((tmpl_da(c->data.map->lhs)->type == FR_TYPE_UINT64) &&
+		if ((tmpl_da(c->opand.binary->lhs)->type == FR_TYPE_UINT64) &&
 		    (c->cast->type == FR_TYPE_ETHERNET)) {
 			goto cast_ok;
 		}
@@ -330,8 +371,8 @@ static ssize_t cond_check_cast(fr_cond_t *c, char const *start,
 		 *	dst.max < src.min
 		 *	dst.min > src.max
 		 */
-		if ((dict_attr_sizes[c->cast->type][1] < dict_attr_sizes[tmpl_da(c->data.map->lhs)->type][0]) ||
-		    (dict_attr_sizes[c->cast->type][0] > dict_attr_sizes[tmpl_da(c->data.map->lhs)->type][1])) {
+		if ((dict_attr_sizes[c->cast->type][1] < dict_attr_sizes[tmpl_da(c->opand.binary->lhs)->type][0]) ||
+		    (dict_attr_sizes[c->cast->type][0] > dict_attr_sizes[tmpl_da(c->opand.binary->lhs)->type][1])) {
 			fr_strerror_const("Cannot cast to attribute of incompatible size");
 			return 0;
 		}
@@ -344,8 +385,8 @@ cast_ok:
 	 *	Do this LAST, as the rest of the code above assumes c->cast
 	 *	is not NULL.
 	 */
-	if (tmpl_is_attr(c->data.map->lhs) &&
-	    (c->cast->type == tmpl_da(c->data.map->lhs)->type)) {
+	if (tmpl_is_attr(c->opand.binary->lhs) &&
+	    (c->cast->type == tmpl_da(c->opand.binary->lhs)->type)) {
 		c->cast = NULL;
 	}
 
@@ -358,8 +399,8 @@ cast_ok:
 static ssize_t cond_check_attrs(fr_cond_t *c, fr_sbuff_marker_t *m_lhs, fr_sbuff_marker_t *m_rhs)
 {
 	tmpl_t		*attr, *data, *xlat, *unresolved, *xlat_unresolved, *exec, *vpt;
-	tmpl_t		*lhs = c->data.map->lhs, *rhs = c->data.map->rhs;
-	fr_token_t	op = c->data.map->op;
+	tmpl_t		*lhs = c->opand.binary->lhs, *rhs = c->opand.binary->rhs;
+	fr_token_t	op = c->opand.binary->op;
 
 /** True if one operand is of _type_a and the other of _type_b
  */
@@ -593,7 +634,7 @@ static ssize_t cond_check_attrs(fr_cond_t *c, fr_sbuff_marker_t *m_lhs, fr_sbuff
 		if (!hyphens || (hyphens > 3)) may_be_attr = false;
 
 		if (may_be_attr) {
-			attr_slen = tmpl_afrom_attr_str(c->data.map, NULL, &vpt, fr_sbuff_current(m_lhs),
+			attr_slen = tmpl_afrom_attr_str(c->opand.binary, NULL, &vpt, fr_sbuff_current(m_lhs),
 							&(tmpl_rules_t){
 								.allow_unknown = true,
 								.allow_unresolved = true
@@ -623,7 +664,7 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 	 *	Normalize the condition before returning.
 	 *
 	 *	We collapse multiple levels of braces to one.  Then
-	 *	convert maps to literals.  Then literals to true/false
+	 *	convert opandss to literals.  Then literals to true/false
 	 *	statements.  Then true/false ||/&& followed by other
 	 *	conditions to just conditions.
 	 *
@@ -638,7 +679,7 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 	while (c->type == COND_TYPE_CHILD) {
 		fr_cond_t *child;
 
-		child = c->data.child;
+		child = c->opand.child;
 
 		/*
 		 *	(FOO)     --> FOO
@@ -689,7 +730,7 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 	 *	This doesn't make a lot of difference, but it does
 	 *	help fix !* and =*, which are horrible hacks.
 	 */
-	if (c->type == COND_TYPE_MAP) switch (c->data.map->op) {
+	if (c->type == COND_TYPE_BINARY) switch (c->opand.binary->op) {
 		/*
 		 *	!FOO !~ BAR --> FOO =~ BAR
 		 *
@@ -698,10 +739,10 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 		case T_OP_REG_NE:
 			if (c->negate) {
 				c->negate = false;
-				c->data.map->op = T_OP_REG_EQ;
+				c->opand.binary->op = T_OP_REG_EQ;
 			} else {
 				c->negate = true;
-				c->data.map->op = T_OP_REG_EQ;
+				c->opand.binary->op = T_OP_REG_EQ;
 			}
 			break;
 
@@ -717,10 +758,10 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 		case T_OP_NE:
 			if (c->negate) {
 				c->negate = false;
-				c->data.map->op = T_OP_CMP_EQ;
+				c->opand.binary->op = T_OP_CMP_EQ;
 			} else {
 				c->negate = true;
-				c->data.map->op = T_OP_CMP_EQ;
+				c->opand.binary->op = T_OP_CMP_EQ;
 			}
 			break;
 
@@ -736,20 +777,20 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 		{
 			tmpl_t *vpt;
 
-			vpt = talloc_steal(c, c->data.map->lhs);
-			c->data.map->lhs = NULL;
+			vpt = talloc_steal(c, c->opand.binary->lhs);
+			c->opand.binary->lhs = NULL;
 
 			/*
 			 *	Invert the negation bit.
 			 */
-			if (c->data.map->op == T_OP_CMP_FALSE) {
+			if (c->opand.binary->op == T_OP_CMP_FALSE) {
 				c->negate = !c->negate;
 			}
 
-			TALLOC_FREE(c->data.map);
+			TALLOC_FREE(c->opand.binary);
 
-			c->type = COND_TYPE_TMPL;
-			c->data.vpt = vpt;
+			c->type = COND_TYPE_UNARY;
+			c->opand.unary = vpt;
 			goto check_tmpl;
 		}
 
@@ -765,19 +806,19 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 	 *	Do compile-time evaluation of literals.  That way it
 	 *	does not need to be done at run-time.
 	 */
-	if (c->type == COND_TYPE_MAP) {
+	if (c->type == COND_TYPE_BINARY) {
 		/*
 		 *	Both are data (IP address, integer, etc.)
 		 *
 		 *	We can do the evaluation here, so that it
 		 *	doesn't need to be done at run time
 		 */
-		if (tmpl_is_data(c->data.map->lhs) &&
-		    tmpl_is_data(c->data.map->rhs)) {
+		if (tmpl_is_data(c->opand.binary->lhs) &&
+		    tmpl_is_data(c->opand.binary->rhs)) {
 			int rcode;
 
-			rcode = cond_eval_map(NULL, 0, c);
-			TALLOC_FREE(c->data.map);
+			rcode = cond_eval_binary(NULL, 0, c);
+			TALLOC_FREE(c->opand.binary);
 			c->cast = NULL;
 			if (rcode) {
 				c->type = COND_TYPE_TRUE;
@@ -785,7 +826,7 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 				c->type = COND_TYPE_FALSE;
 			}
 
-			goto check_true; /* it's no longer a map */
+			goto check_true; /* it's no longer a opands */
 		}
 
 		/*
@@ -796,28 +837,28 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 		 *	We can do the evaluation here, so that it
 		 *	doesn't need to be done at run time
 		 */
-		if (tmpl_is_unresolved(c->data.map->rhs) &&
-		    tmpl_is_unresolved(c->data.map->lhs) &&
+		if (tmpl_is_unresolved(c->opand.binary->rhs) &&
+		    tmpl_is_unresolved(c->opand.binary->lhs) &&
 		    !c->pass2_fixup) {
 			int rcode;
 
 			fr_assert(c->cast == NULL);
 
-			rcode = cond_eval_map(NULL, 0, c);
+			rcode = cond_eval_binary(NULL, 0, c);
 			if (rcode) {
 				c->type = COND_TYPE_TRUE;
 			} else {
 				DEBUG4("OPTIMIZING (%s %s %s) --> FALSE",
-				       c->data.map->lhs->name,
-				       fr_table_str_by_value(fr_tokens_table, c->data.map->op, "??"),
-				       c->data.map->rhs->name);
+				       c->opand.binary->lhs->name,
+				       fr_table_str_by_value(fr_tokens_table, c->opand.binary->op, "??"),
+				       c->opand.binary->rhs->name);
 				c->type = COND_TYPE_FALSE;
 			}
 
 			/*
-			 *	Free map after using it above.
+			 *	Free opands after using it above.
 			 */
-			TALLOC_FREE(c->data.map);
+			TALLOC_FREE(c->opand.binary);
 			goto check_true;
 		}
 
@@ -827,36 +868,36 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 		 *	that the attribute reference is on the LHS.
 		 */
 		if (c->cast &&
-		    tmpl_is_attr(c->data.map->rhs) &&
-		    (c->cast->type == tmpl_da(c->data.map->rhs)->type) &&
-		    !tmpl_is_attr(c->data.map->lhs)) {
+		    tmpl_is_attr(c->opand.binary->rhs) &&
+		    (c->cast->type == tmpl_da(c->opand.binary->rhs)->type) &&
+		    !tmpl_is_attr(c->opand.binary->lhs)) {
 			tmpl_t *tmp;
 
-			tmp = c->data.map->rhs;
-			c->data.map->rhs = c->data.map->lhs;
-			c->data.map->lhs = tmp;
+			tmp = c->opand.binary->rhs;
+			c->opand.binary->rhs = c->opand.binary->lhs;
+			c->opand.binary->lhs = tmp;
 
 			c->cast = NULL;
 
-			switch (c->data.map->op) {
+			switch (c->opand.binary->op) {
 			case T_OP_CMP_EQ:
 				/* do nothing */
 				break;
 
 			case T_OP_LE:
-				c->data.map->op = T_OP_GE;
+				c->opand.binary->op = T_OP_GE;
 				break;
 
 			case T_OP_LT:
-				c->data.map->op = T_OP_GT;
+				c->opand.binary->op = T_OP_GT;
 				break;
 
 			case T_OP_GE:
-				c->data.map->op = T_OP_LE;
+				c->opand.binary->op = T_OP_LE;
 				break;
 
 			case T_OP_GT:
-				c->data.map->op = T_OP_LT;
+				c->opand.binary->op = T_OP_LT;
 				break;
 
 			default:
@@ -867,7 +908,7 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 			/*
 			 *	This must have been parsed into TMPL_TYPE_DATA.
 			 */
-			fr_assert(!tmpl_is_unresolved(c->data.map->rhs));
+			fr_assert(!tmpl_is_unresolved(c->opand.binary->rhs));
 		}
 	}
 
@@ -880,9 +921,9 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 	 *
 	 *	"foo" is NOT the same as 'foo' or a bare foo.
 	 */
-	if (c->type == COND_TYPE_TMPL) {
+	if (c->type == COND_TYPE_UNARY) {
 	check_tmpl:
-		switch (c->data.vpt->type) {
+		switch (c->opand.unary->type) {
 		case TMPL_TYPE_XLAT:
 		case TMPL_TYPE_XLAT_UNRESOLVED:
 		case TMPL_TYPE_ATTR:
@@ -912,21 +953,21 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 		 *	codes.
 		 */
 		case TMPL_TYPE_UNRESOLVED:
-			if (!*c->data.vpt->name) {
+			if (!*c->opand.unary->name) {
 				c->type = COND_TYPE_FALSE;
-				TALLOC_FREE(c->data.vpt);
+				TALLOC_FREE(c->opand.unary);
 
 			} else if ((lhs_type == T_SINGLE_QUOTED_STRING) ||
 				   (lhs_type == T_DOUBLE_QUOTED_STRING)) {
 				c->type = COND_TYPE_TRUE;
-				TALLOC_FREE(c->data.vpt);
+				TALLOC_FREE(c->opand.unary);
 
 			} else if (lhs_type == T_BARE_WORD) {
 				int rcode;
 				bool zeros = true;
 				char const *q;
 
-				for (q = c->data.vpt->name;
+				for (q = c->opand.unary->name;
 				     *q != '\0';
 				     q++) {
 					if (!isdigit((int) *q)) {
@@ -945,7 +986,7 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 					} else {
 						c->type = COND_TYPE_TRUE;
 					}
-					TALLOC_FREE(c->data.vpt);
+					TALLOC_FREE(c->opand.unary);
 					break;
 				}
 
@@ -957,7 +998,7 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 					break;
 				}
 
-				rcode = fr_table_value_by_str(allowed_return_codes, c->data.vpt->name, 0);
+				rcode = fr_table_value_by_str(allowed_return_codes, c->opand.unary->name, 0);
 				if (!rcode) {
 					fr_strerror_const("Expected a module return code");
 					return -1;
@@ -975,9 +1016,9 @@ static int cond_normalise(fr_token_t lhs_type, fr_cond_t **c_out)
 		{
 			fr_value_box_t res;
 
-			if (fr_value_box_cast(NULL, &res, FR_TYPE_BOOL, NULL, tmpl_value(c->data.vpt)) < 0) return -1;
+			if (fr_value_box_cast(NULL, &res, FR_TYPE_BOOL, NULL, tmpl_value(c->opand.unary)) < 0) return -1;
 			c->type = res.vb_bool ? COND_TYPE_TRUE : COND_TYPE_FALSE;
-			TALLOC_FREE(c->data.vpt);
+			TALLOC_FREE(c->opand.unary);
 		}
 			break;
 
@@ -1299,13 +1340,13 @@ static ssize_t cond_tokenize(TALLOC_CTX *ctx, fr_cond_t **out,
 		c->type = COND_TYPE_CHILD;
 		c->ci = cf_section_to_item(cs);
 
-		slen = cond_tokenize(ctx, &c->data.child, cs, &our_in, brace + 1, t_rules);
+		slen = cond_tokenize(ctx, &c->opand.child, cs, &our_in, brace + 1, t_rules);
 		if (slen <= 0) {
 			fr_sbuff_advance(&our_in, slen * -1);
 			goto error;
 		}
 
-		if (!c->data.child) {
+		if (!c->opand.child) {
 			fr_strerror_const("Empty condition is invalid");
 			goto error;
 		}
@@ -1417,14 +1458,14 @@ static ssize_t cond_tokenize(TALLOC_CTX *ctx, fr_cond_t **out,
 
 			c->type = COND_TYPE_RCODE;
 			c->ci = cf_section_to_item(cs);
-			c->data.rcode = rcode;
+			c->opand.rcode = rcode;
 
 			goto closing_brace;
 		}
 
-		c->type = COND_TYPE_TMPL;
+		c->type = COND_TYPE_UNARY;
 		c->ci = cf_section_to_item(cs);
-		c->data.vpt = lhs;
+		c->opand.unary = lhs;
 
 		goto closing_brace;
 	}
@@ -1447,13 +1488,13 @@ static ssize_t cond_tokenize(TALLOC_CTX *ctx, fr_cond_t **out,
 	fr_sbuff_adv_past_whitespace(&our_in, SIZE_MAX, NULL);
 
 	{
-		map_t 	*map;
+		fr_cond_opands_t 	*opands;
 		tmpl_t	*rhs;
 
 		/*
 		 *	The next thing should now be a comparison operator.
 		 */
-		c->type = COND_TYPE_MAP;
+		c->type = COND_TYPE_BINARY;
 		c->ci = cf_section_to_item(cs);
 
 		switch (op) {
@@ -1481,7 +1522,7 @@ static ssize_t cond_tokenize(TALLOC_CTX *ctx, fr_cond_t **out,
 			goto error;
 		}
 
-		MEM(c->data.map = map = talloc(c, map_t));
+		MEM(c->opand.binary = opands = talloc(c, fr_cond_opands_t));
 
 		/*
 		 *	Grab the RHS
@@ -1499,7 +1540,7 @@ static ssize_t cond_tokenize(TALLOC_CTX *ctx, fr_cond_t **out,
 		 */
 		if (cond_forbid_groups(rhs, &our_in, &m_rhs) < 0) goto error;
 
-		*map = (map_t) {
+		*opands = (fr_cond_opands_t) {
 			.ci = cf_section_to_item(cs),
 			.lhs = lhs,
 			.op = op,
@@ -1685,8 +1726,8 @@ bool fr_cond_walk(fr_cond_t *c, bool (*callback)(fr_cond_t *cond, void *uctx), v
 			return false;
 
 		case COND_TYPE_RCODE:
-		case COND_TYPE_TMPL:
-		case COND_TYPE_MAP:
+		case COND_TYPE_UNARY:
+		case COND_TYPE_BINARY:
 		case COND_TYPE_AND:
 		case COND_TYPE_OR:
 		case COND_TYPE_TRUE:
@@ -1697,7 +1738,7 @@ bool fr_cond_walk(fr_cond_t *c, bool (*callback)(fr_cond_t *cond, void *uctx), v
 			/*
 			 *	Walk over the child.
 			 */
-			if (!fr_cond_walk(c->data.child, callback, uctx)) {
+			if (!fr_cond_walk(c->opand.child, callback, uctx)) {
 				return false;
 			}
 		}
@@ -1709,36 +1750,4 @@ bool fr_cond_walk(fr_cond_t *c, bool (*callback)(fr_cond_t *cond, void *uctx), v
 	}
 
 	return true;
-}
-
-/** Convert a single map to a condition.
- *
- * @param ctx	the talloc context where the condition is allocated
- * @param[out]	head the newly allocated condition.  Should only be one!
- * @param[in]	map the map to convert. MAY be freed.
- * @return
- *	- <0 on error "map" is untouched.
- *	- 0 on success - "map" MAY be freed
- */
-int fr_cond_from_map(TALLOC_CTX *ctx, fr_cond_t **head, map_t *map)
-{
-	fr_cond_t *cond = talloc_zero(ctx, fr_cond_t);
-
-	if (!cond) return -1;
-
-	cond->type = COND_TYPE_MAP;
-	cond->data.map = map;
-
-	if (cond_normalise(T_BARE_WORD, &cond) < 0) return -1;
-
-	/*
-	 *	If the condition is still a MAP, then make the map
-	 *	owned by the condition.
-	 */
-	if (cond->type == COND_TYPE_MAP) {
-		(void) talloc_steal(cond, map);
-	}
-
-	*head = cond;
-	return 0;
 }
